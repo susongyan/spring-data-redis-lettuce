@@ -1,0 +1,276 @@
+# AsyncRedisTemplate
+
+一个基于 Spring Boot + Spring Data Redis + Lettuce 的 future 风格异步 Redis 访问层。
+
+它的目标不是替代 `ReactiveRedisTemplate`，而是在保留 `RedisTemplate` 使用习惯的前提下，提供一套统一返回 `CompletionStage<T>` 的异步 API。
+
+## 设计目标
+
+- API 风格尽量贴近 `RedisTemplate`，通过 `opsForValue()`、`opsForHash()` 暴露访问入口。
+- 返回类型统一为 `CompletionStage<T>`，便于在普通 Spring MVC / service 层直接使用 future 链式编排。
+- 底层直接复用 Lettuce 原生 async API，不引入 `ReactiveRedisTemplate`。
+- 不暴露 `RedisFuture`，对业务层屏蔽 Lettuce 细节。
+- 复用现有 `RedisTemplate` 的 serializer，保证同步模板和异步模板序列化结果一致。
+- 统一处理命令执行、异常翻译、metrics 打点，为后续扩展 list/set/zset 预留空间。
+
+## 和 RedisTemplate / ReactiveRedisTemplate 对比
+
+| 维度 | RedisTemplate | AsyncRedisTemplate | ReactiveRedisTemplate |
+| --- | --- | --- | --- |
+| 编程模型 | 同步阻塞 | `CompletionStage` 异步 | Reactor 响应式 |
+| 返回类型 | 直接值 | `CompletionStage<T>` | `Mono<T>` / `Flux<T>` |
+| 底层 I/O | 调用方通常以阻塞方式使用 | Lettuce async，非阻塞 I/O | Lettuce reactive，非阻塞 I/O |
+| 业务侵入性 | 最低 | 低，适合现有 imperative 项目 | 较高，需要 Reactor 体系 |
+| serializer 复用 | 原生支持 | 原生复用 `RedisTemplate` serializer | 通常单独配置 `RedisSerializationContext` |
+| 适用场景 | 同步服务 | 想避免阻塞但不想全面引入 Reactor | WebFlux / 响应式全链路 |
+
+可以把它理解成一个中间方案：
+
+- 如果你已经在用 `RedisTemplate`，但希望服务层改成异步链式调用，`AsyncRedisTemplate` 更合适。
+- 如果你已经是 Reactor / WebFlux 全栈，`ReactiveRedisTemplate` 更自然。
+
+## 使用方式
+
+### 1. 自动装配
+
+项目提供自动配置，在已有 `redisTemplate` / `stringRedisTemplate` 的前提下，会自动注册：
+
+- `asyncRedisTemplate`
+- `asyncStringRedisTemplate`
+
+默认配置类是：
+
+- `com.example.redis.async.config.AsyncRedisConfiguration`
+
+### 2. 注入并使用
+
+```java
+@Service
+public class UserProfileService {
+
+    private final AsyncRedisTemplate<String, String> redis;
+
+    public UserProfileService(
+            @Qualifier("asyncStringRedisTemplate") AsyncRedisTemplate<String, String> redis
+    ) {
+        this.redis = redis;
+    }
+
+    public CompletionStage<UserProfile> save(String id, UserProfileUpsertRequest request) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("displayName", request.displayName());
+        fields.put("email", request.email());
+        fields.put("city", request.city());
+
+        return redis.<String, String>opsForHash()
+                .putAll("example:user:profile:" + id, fields)
+                .thenCompose(ignored -> redis.opsForValue()
+                        .set("example:user:status:" + id, "ACTIVE", Duration.ofMinutes(30)))
+                .thenCompose(ignored -> get(id));
+    }
+
+    public CompletionStage<UserProfile> get(String id) {
+        CompletionStage<Map<String, String>> profileStage =
+                redis.<String, String>opsForHash().entries("example:user:profile:" + id);
+        CompletionStage<String> statusStage =
+                redis.opsForValue().get("example:user:status:" + id);
+
+        return profileStage.thenCombine(statusStage, (entries, status) -> {
+            if (entries == null || entries.isEmpty()) {
+                return null;
+            }
+            return new UserProfile(
+                    id,
+                    entries.get("displayName"),
+                    entries.get("email"),
+                    entries.get("city"),
+                    status
+            );
+        });
+    }
+}
+```
+
+### 3. 在 Controller 中直接返回 CompletionStage
+
+```java
+@RestController
+@RequestMapping("/api/users")
+public class UserProfileController {
+
+    private final UserProfileService service;
+
+    public UserProfileController(UserProfileService service) {
+        this.service = service;
+    }
+
+    @PutMapping("/{id}")
+    public CompletionStage<UserProfile> putProfile(
+            @PathVariable String id,
+            @RequestBody UserProfileUpsertRequest request
+    ) {
+        return service.save(id, request);
+    }
+}
+```
+
+### 4. 复用自定义 RedisTemplate 的 serializer
+
+如果你已经有自己的 `RedisTemplate<K, V>`，可以直接基于它创建异步模板：
+
+```java
+@Bean
+AsyncRedisTemplate<String, UserProfile> asyncUserProfileRedisTemplate(
+        AsyncRedisTemplateFactory factory,
+        @Qualifier("userProfileRedisTemplate") RedisTemplate<String, UserProfile> redisTemplate
+) {
+    return factory.create(redisTemplate);
+}
+```
+
+这会直接复用原模板上的：
+
+- key serializer
+- value serializer
+- hash key serializer
+- hash value serializer
+
+## 支持范围
+
+当前 v1 只支持普通非阻塞 KV / Hash 命令。
+
+### 通用 key 命令
+
+- `delete(key)`
+- `delete(keys)`
+- `hasKey`
+- `expire`
+- `persist`
+- `getExpire`
+
+### Value 命令
+
+- `get`
+- `set`
+- `set(key, value, ttl)`
+- `setIfAbsent`
+- `setIfPresent`
+- `getAndSet`
+- `multiGet`
+- `multiSet`
+- `increment`
+- `increment(key, delta)`
+- `decrement`
+- `decrement(key, delta)`
+
+### Hash 命令
+
+- `get`
+- `hasKey`
+- `put`
+- `putIfAbsent`
+- `putAll`
+- `multiGet`
+- `delete`
+- `entries`
+- `keys`
+- `values`
+- `size`
+- `increment(key, hashKey, long delta)`
+- `increment(key, hashKey, double delta)`
+
+## 限制
+
+- 不使用 `ReactiveRedisTemplate`
+- 不暴露 `RedisFuture`
+- 不允许在生产调用链中通过 `future.get()` / `join()` 阻塞线程
+- v1 不支持事务：`MULTI` / `EXEC` / `WATCH`
+- v1 不支持阻塞命令：`BLPOP` / `BRPOP`
+- v1 不支持 Pub/Sub
+- v1 不支持 Stream 消费
+- v1 不支持 scan / cursor 类命令
+- v1 不支持脚本执行和显式 pipeline 控制
+- 当前只实现了 KV / Hash，list / set / zset 预留到后续版本
+
+## 实现说明
+
+### 连接模型
+
+- 默认使用共享 Lettuce 连接，不做命令级 borrow / return
+- 底层使用 `byte[] -> byte[]` 命令视图，统一由 serializer 负责编解码
+- 对 standalone 和 cluster 都可以工作，连接提供者是 `LettuceAsyncRedisConnectionProvider`
+
+### 异常处理
+
+- 对外统一表现为 `CompletionStage` 异常完成
+- Lettuce 超时等异常会被翻译成 Spring 风格异常
+- 命令执行、异常翻译、metrics 打点都集中在执行器中处理
+
+### 解码线程
+
+- 默认沿用当前执行链
+- 可以通过 `AsyncRedisTemplateOptions` 配置 `decodeExecutor`
+- 如果 value/hash value 反序列化较重，可以把解码切到独立线程池
+
+## 最小示例
+
+项目里已经包含一个最小 Spring Boot 示例：
+
+- 应用入口：`src/main/java/com/example/redis/example/AsyncRedisExampleApplication.java`
+- 示例 Service：`src/main/java/com/example/redis/example/UserProfileService.java`
+- 示例 Controller：`src/main/java/com/example/redis/example/UserProfileController.java`
+
+示例接口：
+
+- `PUT /api/users/{id}`
+- `GET /api/users/{id}`
+- `PUT /api/users/{id}/status?value=BUSY`
+- `DELETE /api/users/{id}`
+
+默认 Redis 配置：
+
+```yaml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+```
+
+## 运行方式
+
+### 本地启动示例应用
+
+先准备一个本地 Redis：
+
+```bash
+docker run --rm -p 6379:6379 redis:7
+```
+
+然后启动应用：
+
+```bash
+mvn spring-boot:run
+```
+
+### 运行测试
+
+```bash
+mvn test
+```
+
+项目里包含两类测试：
+
+- 单元测试：验证 serializer 复用、命令映射、异常翻译
+- 集成测试：启动真实 Redis 进程，验证 `AsyncRedisTemplate` 和 HTTP 示例链路
+
+集成测试使用 `embedded-redis`，不依赖外部 Docker 环境。
+
+## 示例代码位置
+
+- 异步模板入口：`src/main/java/com/example/redis/async/api/AsyncRedisTemplate.java`
+- Value API：`src/main/java/com/example/redis/async/api/AsyncValueOperations.java`
+- Hash API：`src/main/java/com/example/redis/async/api/AsyncHashOperations.java`
+- 自动配置：`src/main/java/com/example/redis/async/config/AsyncRedisConfiguration.java`
+- 集成测试：`src/test/java/com/example/redis/example/AsyncRedisTemplateIntegrationTests.java`
+
