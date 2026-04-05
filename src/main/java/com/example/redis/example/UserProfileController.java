@@ -32,12 +32,29 @@ public class UserProfileController {
         return userProfileService.save(id, request);
     }
 
+    @PutMapping("/blocking/{id}")
+    public ResponseEntity<UserProfile> putProfileBlocking(
+            @PathVariable String id,
+            @RequestBody UserProfileUpsertRequest request
+    ) {
+        return ResponseEntity.ok(userProfileService.saveBlocking(id, request));
+    }
+
     @GetMapping("/{id}")
     public CompletionStage<ResponseEntity<UserProfile>> getProfile(@PathVariable String id) {
         return userProfileService.get(id)
                 .thenApply(profile -> profile == null
                         ? ResponseEntity.notFound().build()
                         : ResponseEntity.ok(profile));
+    }
+
+    @GetMapping("/blocking/{id}")
+    public ResponseEntity<UserProfile> getProfileBlocking(@PathVariable String id) {
+        UserProfile profile = userProfileService.getBlocking(id);
+        if (profile == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(profile);
     }
 
     @PutMapping("/{id}/status")

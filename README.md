@@ -135,6 +135,50 @@ AsyncRedisTemplate<String, UserProfile> asyncUserProfileRedisTemplate(
 - hash key serializer
 - hash value serializer
 
+### 5. Demo：异步调用，同步等待结果
+
+如果你的上层还是同步调用方，也可以在边界层把异步结果等待回来。这个模式适合 demo、迁移阶段或者少量同步桥接代码，不建议作为默认用法铺开。
+
+```java
+@Service
+public class UserProfileService {
+
+    public UserProfile getBlocking(String id) {
+        try {
+            return get(id).toCompletableFuture().get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for async Redis result", e);
+        } catch (TimeoutException e) {
+            throw new IllegalStateException("Timed out while waiting for async Redis result", e);
+        } catch (ExecutionException e) {
+            throw new IllegalStateException("Async Redis call failed", e.getCause());
+        }
+    }
+}
+
+@RestController
+@RequestMapping("/api/users")
+public class UserProfileController {
+
+    @GetMapping("/blocking/{id}")
+    public ResponseEntity<UserProfile> getProfileBlocking(@PathVariable String id) {
+        UserProfile profile = userProfileService.getBlocking(id);
+        if (profile == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(profile);
+    }
+}
+```
+
+项目里的完整 demo 已实现：
+
+- `PUT /api/users/blocking/{id}`
+- `GET /api/users/blocking/{id}`
+
+这两个接口内部仍然走 `AsyncRedisTemplate`，只是 controller/service 边界同步等待结果后再返回。
+
 ## 支持范围
 
 当前 v1 只支持普通非阻塞 KV / Hash 命令。
@@ -226,6 +270,8 @@ AsyncRedisTemplate<String, UserProfile> asyncUserProfileRedisTemplate(
 - `GET /api/users/{id}`
 - `PUT /api/users/{id}/status?value=BUSY`
 - `DELETE /api/users/{id}`
+- `PUT /api/users/blocking/{id}`
+- `GET /api/users/blocking/{id}`
 
 默认 Redis 配置：
 
@@ -273,4 +319,3 @@ mvn test
 - Hash API：`src/main/java/com/example/redis/async/api/AsyncHashOperations.java`
 - 自动配置：`src/main/java/com/example/redis/async/config/AsyncRedisConfiguration.java`
 - 集成测试：`src/test/java/com/example/redis/example/AsyncRedisTemplateIntegrationTests.java`
-

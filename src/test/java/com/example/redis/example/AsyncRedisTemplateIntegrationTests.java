@@ -168,6 +168,49 @@ class AsyncRedisTemplateIntegrationTests {
         assertThat(afterDeleteResponse.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
+    @Test
+    void blockingDemoEndpointShouldWaitForAsyncResult() throws Exception {
+        String userId = UUID.randomUUID().toString();
+        UserProfileUpsertRequest request = new UserProfileUpsertRequest("Bob", "bob@example.com", "Hangzhou");
+
+        ResponseEntity<UserProfile> putResponse = testRestTemplate.exchange(
+                baseUrl("/api/users/blocking/" + userId),
+                HttpMethod.PUT,
+                new HttpEntity<>(request),
+                UserProfile.class
+        );
+
+        assertThat(putResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(putResponse.getBody()).isEqualTo(new UserProfile(
+                userId,
+                "Bob",
+                "bob@example.com",
+                "Hangzhou",
+                "ACTIVE"
+        ));
+
+        ResponseEntity<UserProfile> getResponse = testRestTemplate.getForEntity(
+                baseUrl("/api/users/blocking/" + userId),
+                UserProfile.class
+        );
+
+        assertThat(getResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(getResponse.getBody()).isEqualTo(new UserProfile(
+                userId,
+                "Bob",
+                "bob@example.com",
+                "Hangzhou",
+                "ACTIVE"
+        ));
+
+        String status = asyncRedisTemplate.opsForValue()
+                .get("example:user:status:" + userId)
+                .toCompletableFuture()
+                .get(5, TimeUnit.SECONDS);
+
+        assertThat(status).isEqualTo("ACTIVE");
+    }
+
     private String baseUrl(String path) {
         return "http://127.0.0.1:" + port + path;
     }
