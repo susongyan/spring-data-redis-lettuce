@@ -165,7 +165,7 @@ final class DefaultAsyncHashOperations<K, HK, HV> implements AsyncHashOperations
             return commandExecutor.execute(
                     new CommandDescriptor("HVALS", RedisDataStructure.HASH, 1),
                     () -> connectionProvider.commands().hvals(rawKey),
-                    values -> serialization.<HV>deserializeValues((List<byte[]>) values)
+                    values -> serialization.<HV>deserializeHashValues((List<byte[]>) values)
             );
         });
     }

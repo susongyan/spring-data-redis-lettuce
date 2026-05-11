@@ -11,7 +11,7 @@
 - 底层直接复用 Lettuce 原生 async API，不引入 `ReactiveRedisTemplate`。
 - 不暴露 `RedisFuture`，对业务层屏蔽 Lettuce 细节。
 - 复用现有 `RedisTemplate` 的 serializer，保证同步模板和异步模板序列化结果一致。
-- 统一处理命令执行、异常翻译、metrics 打点，为后续扩展 list/set/zset 预留空间。
+- 统一处理命令执行、异常翻译、metrics 打点，支持后续按相同模式继续扩展命令族。
 
 ## 和 RedisTemplate / ReactiveRedisTemplate 对比
 
@@ -181,7 +181,7 @@ public class UserProfileController {
 
 ## 支持范围
 
-当前 v1 只支持普通非阻塞 KV / Hash 命令。
+当前版本支持普通 KV / Hash / List / Set / ZSet 命令，以及事务、阻塞 list、Pub/Sub、Stream 基础能力。
 
 ### 通用 key 命令
 
@@ -223,20 +223,253 @@ public class UserProfileController {
 - `increment(key, hashKey, long delta)`
 - `increment(key, hashKey, double delta)`
 
+### List 命令
+
+- `range`
+- `trim`
+- `size`
+- `leftPush`
+- `leftPushAll`
+- `rightPush`
+- `rightPushAll`
+- `leftPop`
+- `rightPop`
+- `leftPop(timeout, keys)` 对应 `BLPOP`
+- `rightPop(timeout, keys)` 对应 `BRPOP`
+
+### Set 命令
+
+- `add`
+- `remove`
+- `pop`
+- `pop(key, count)`
+- `move`
+- `size`
+- `isMember`
+- `members`
+
+### ZSet 命令
+
+- `add(key, value, score)`
+- `add(key, tuples)`
+- `remove`
+- `incrementScore`
+- `score`
+- `rank`
+- `reverseRank`
+- `range`
+- `rangeWithScores`
+- `size`
+
+### 事务
+
+- `executeTransaction(callback)` 对应 `MULTI/EXEC`
+- `executeTransaction(watchKeys, callback)` 对应 `WATCH + MULTI/EXEC`
+- `executeTransactionWithResult(callback)` 用于返回命令句柄上下文并读取 `EXEC` 结果
+- `executeTransactionWithResult(watchKeys, callback)` 用于带 `WATCH` 的句柄型事务
+
+### Pub/Sub
+
+- `publish`
+- `subscribe`
+- `psubscribe`
+
+### Stream
+
+- `add` 对应 `XADD`
+- `acknowledge` 对应 `XACK`
+- `createGroup` 对应 `XGROUP CREATE`
+- `destroyGroup` 对应 `XGROUP DESTROY`
+- `range` 对应 `XRANGE`
+- `read(options, offsets)` 对应 `XREAD`
+- `read(consumer, options, offsets)` 对应 `XREADGROUP`
+- `trim` 对应 `XTRIM`
+
 ## 限制
 
 - 不使用 `ReactiveRedisTemplate`
 - 不暴露 `RedisFuture`
 - 不允许在生产调用链中通过 `future.get()` / `join()` 阻塞线程
-- v1 不支持事务：`MULTI` / `EXEC` / `WATCH`
-- v1 不支持阻塞命令：`BLPOP` / `BRPOP`
-- v1 不支持 Pub/Sub
-- v1 不支持 Stream 消费
-- v1 不支持 scan / cursor 类命令
-- v1 不支持脚本执行和显式 pipeline 控制
-- 当前只实现了 KV / Hash，list / set / zset 预留到后续版本
+- 事务当前只支持 standalone Redis；cluster 连接不支持 `MULTI` / `EXEC` / `WATCH`
+- 阻塞命令当前只支持 list 的 `BLPOP` / `BRPOP`
+- Pub/Sub 当前只覆盖基础 publish / subscribe / pattern subscribe，不包含更高层封装
+- Stream 当前只覆盖基础追加、读、消费组、ack 和 trim，不包含完整消费者容错模型
+- 仍不支持 scan / cursor 类命令
+- 仍不支持脚本执行和显式 pipeline 控制
+- 仍未覆盖 `RedisTemplate` 的全部命令面，bitmap、geo、hyperloglog 等还未实现
 
 ## 实现说明
+
+### 源码结构关系图
+
+```mermaid
+flowchart LR
+    subgraph config["config 自动装配层"]
+        configuration["AsyncRedisConfiguration"]
+        factory["AsyncRedisTemplateFactory"]
+    end
+
+    subgraph api["api 对外访问层"]
+        operations["AsyncRedisOperations<K,V>"]
+        template["AsyncRedisTemplate<K,V>"]
+        valueApi["AsyncValueOperations"]
+        hashApi["AsyncHashOperations"]
+        listApi["AsyncListOperations"]
+        setApi["AsyncSetOperations"]
+        zsetApi["AsyncZSetOperations"]
+        streamApi["AsyncStreamOperations"]
+        pubsubApi["AsyncPubSubOperations"]
+        txApi["AsyncTransactionOperations"]
+        valueOps["DefaultAsyncValueOperations"]
+        hashOps["DefaultAsyncHashOperations"]
+        listOps["DefaultAsyncListOperations"]
+        setOps["DefaultAsyncSetOperations"]
+        zsetOps["DefaultAsyncZSetOperations"]
+        streamOps["DefaultAsyncStreamOperations"]
+        pubsubOps["DefaultAsyncPubSubOperations"]
+        txOps["DefaultAsyncTransactionOperations"]
+    end
+
+    subgraph serialize["serialize 序列化层"]
+        serializationContext["RedisTemplateSerializationContext"]
+        serializationFacade["RedisSerializationFacade"]
+        redisTemplate["RedisTemplate serializers"]
+    end
+
+    subgraph executor["executor 命令执行层"]
+        commandExecutor["AsyncCommandExecutor"]
+        lettuceExecutor["LettuceAsyncCommandExecutor"]
+        descriptor["CommandDescriptor"]
+        dataStructure["RedisDataStructure"]
+    end
+
+    subgraph connection["connection 连接层"]
+        provider["AsyncRedisConnectionProvider"]
+        lettuceProvider["LettuceAsyncRedisConnectionProvider"]
+        sharedCommands["shared RedisAsyncCommands"]
+        dedicatedSession["AsyncRedisConnectionSession"]
+        pubsubSession["AsyncRedisPubSubSession"]
+    end
+
+    subgraph support["support 横切能力"]
+        exceptionTranslator["AsyncRedisExceptionTranslator"]
+        metricsRecorder["AsyncRedisMetricsRecorder"]
+        options["AsyncRedisTemplateOptions"]
+        stageAdapters["StageAdapters"]
+    end
+
+    configuration --> factory
+    factory --> template
+    redisTemplate --> serializationContext
+    serializationContext --> serializationFacade
+
+    operations <|.. template
+    template --> valueApi
+    template --> hashApi
+    template --> listApi
+    template --> setApi
+    template --> zsetApi
+    template --> streamApi
+    template --> pubsubApi
+    template --> txApi
+
+    valueApi <|.. valueOps
+    hashApi <|.. hashOps
+    listApi <|.. listOps
+    setApi <|.. setOps
+    zsetApi <|.. zsetOps
+    streamApi <|.. streamOps
+    pubsubApi <|.. pubsubOps
+    txApi <|.. txOps
+
+    template --> serializationFacade
+    valueOps --> serializationFacade
+    hashOps --> serializationFacade
+    listOps --> serializationFacade
+    setOps --> serializationFacade
+    zsetOps --> serializationFacade
+    streamOps --> serializationFacade
+    pubsubOps --> serializationFacade
+    txOps --> serializationFacade
+
+    valueOps --> commandExecutor
+    hashOps --> commandExecutor
+    listOps --> commandExecutor
+    setOps --> commandExecutor
+    zsetOps --> commandExecutor
+    streamOps --> commandExecutor
+    pubsubOps --> commandExecutor
+    template --> commandExecutor
+
+    commandExecutor <|.. lettuceExecutor
+    lettuceExecutor --> descriptor
+    descriptor --> dataStructure
+    lettuceExecutor --> exceptionTranslator
+    lettuceExecutor --> metricsRecorder
+    lettuceExecutor --> options
+    lettuceExecutor --> stageAdapters
+
+    valueOps --> provider
+    hashOps --> provider
+    listOps --> provider
+    setOps --> provider
+    zsetOps --> provider
+    streamOps --> provider
+    pubsubOps --> provider
+    txOps --> provider
+
+    provider <|.. lettuceProvider
+    lettuceProvider --> sharedCommands
+    lettuceProvider --> dedicatedSession
+    lettuceProvider --> pubsubSession
+```
+
+### 命令执行时序图
+
+以下以 `asyncRedisTemplate.opsForValue().get(key)` 为例。普通 KV / Hash / List / Set / ZSet 命令走共享 Lettuce async connection；事务、阻塞 list、Pub/Sub、阻塞 Stream read 会在连接层打开 dedicated session 或 pubsub session。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Biz as "业务代码"
+    participant Template as "AsyncRedisTemplate"
+    participant ValueOps as "DefaultAsyncValueOperations"
+    participant Serializer as "RedisSerializationFacade"
+    participant Executor as "LettuceAsyncCommandExecutor"
+    participant Metrics as "AsyncRedisMetricsRecorder"
+    participant Provider as "AsyncRedisConnectionProvider"
+    participant Lettuce as "RedisAsyncCommands"
+    participant Redis as "Redis Server"
+    participant Translator as "AsyncRedisExceptionTranslator"
+
+    Biz->>Template: opsForValue()
+    Template-->>Biz: AsyncValueOperations
+    Biz->>ValueOps: get(key)
+    ValueOps->>Serializer: serializeKey(key)
+    Serializer-->>ValueOps: rawKey
+    ValueOps->>Executor: execute(GET descriptor, invocation, decoder)
+    Executor->>Metrics: start(CommandDescriptor)
+    Executor->>Provider: commands()
+    Provider-->>Executor: shared RedisAsyncCommands
+    Executor->>Lettuce: get(rawKey)
+    Lettuce-->>Executor: RedisFuture<byte[]>
+    Executor-->>Biz: CompletionStage<V>
+
+    Redis-->>Lettuce: RESP bulk string
+    Lettuce-->>Executor: complete RedisFuture
+
+    alt command success
+        Executor->>Serializer: deserializeValue(rawValue)
+        Serializer-->>Executor: value
+        Executor->>Metrics: success()
+        Executor-->>Biz: complete CompletionStage(value)
+    else command failure or decode failure
+        Executor->>Translator: translate(descriptor, error)
+        Translator-->>Executor: Spring-style RuntimeException
+        Executor->>Metrics: failure(exception)
+        Executor-->>Biz: completeExceptionally(exception)
+    end
+```
 
 ### 连接模型
 

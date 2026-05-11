@@ -1,5 +1,6 @@
 package com.example.redis.async.serialize;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -10,7 +11,9 @@ import java.util.Objects;
 import java.util.Set;
 
 import io.lettuce.core.KeyValue;
+import io.lettuce.core.ScoredValue;
 import org.springframework.data.redis.serializer.RedisSerializer;
+import org.springframework.data.redis.core.ZSetOperations;
 
 public final class RedisSerializationFacade {
 
@@ -47,6 +50,10 @@ public final class RedisSerializationFacade {
         return serializeCollection(keys, this::serializeKey);
     }
 
+    public byte[][] serializeValues(Collection<?> values) {
+        return serializeCollection(values, this::serializeValue);
+    }
+
     public byte[][] serializeHashKeys(Collection<?> hashKeys) {
         return serializeCollection(hashKeys, this::serializeHashKey);
     }
@@ -61,6 +68,10 @@ public final class RedisSerializationFacade {
 
     public <T> T deserializeValue(byte[] value) {
         return deserialize(valueSerializer, value);
+    }
+
+    public <T> T deserializeKey(byte[] value) {
+        return deserialize(keySerializer, value);
     }
 
     public <T> T deserializeHashKey(byte[] value) {
@@ -87,7 +98,23 @@ public final class RedisSerializationFacade {
         return values;
     }
 
-    public <T> List<T> deserializeValues(List<byte[]> source) {
+    public <T> List<T> deserializeValueBytes(List<byte[]> source) {
+        List<T> values = new ArrayList<>(source.size());
+        for (byte[] bytes : source) {
+            values.add(deserializeValue(bytes));
+        }
+        return values;
+    }
+
+    public <T> Set<T> deserializeValueSet(Set<byte[]> source) {
+        Set<T> values = new LinkedHashSet<>(source.size());
+        for (byte[] bytes : source) {
+            values.add(deserializeValue(bytes));
+        }
+        return values;
+    }
+
+    public <T> List<T> deserializeHashValues(List<byte[]> source) {
         List<T> values = new ArrayList<>(source.size());
         for (byte[] bytes : source) {
             values.add(deserializeHashValue(bytes));
@@ -107,6 +134,37 @@ public final class RedisSerializationFacade {
         Map<HK, HV> values = new LinkedHashMap<>(source.size());
         source.forEach((rawKey, rawValue) -> values.put(deserializeHashKey(rawKey), deserializeHashValue(rawValue)));
         return values;
+    }
+
+    public <V> Set<ZSetOperations.TypedTuple<V>> deserializeTypedTuples(List<ScoredValue<byte[]>> source) {
+        Set<ZSetOperations.TypedTuple<V>> tuples = new LinkedHashSet<>(source.size());
+        for (ScoredValue<byte[]> scoredValue : source) {
+            V value = scoredValue == null ? null : deserializeValue(scoredValue.getValue());
+            Double score = scoredValue == null ? null : scoredValue.getScore();
+            tuples.add(ZSetOperations.TypedTuple.of(value, score));
+        }
+        return tuples;
+    }
+
+    public ScoredValue<byte[]> serializeTypedTuple(ZSetOperations.TypedTuple<?> tuple) {
+        Object value = Objects.requireNonNull(tuple, "tuple must not be null").getValue();
+        Double score = tuple.getScore();
+        if (score == null) {
+            throw new IllegalArgumentException("tuple score must not be null");
+        }
+        return ScoredValue.just(score, serializeValue(value));
+    }
+
+    public List<ScoredValue<byte[]>> serializeTypedTuples(Collection<? extends ZSetOperations.TypedTuple<?>> tuples) {
+        List<ScoredValue<byte[]>> values = new ArrayList<>(tuples.size());
+        for (ZSetOperations.TypedTuple<?> tuple : tuples) {
+            values.add(serializeTypedTuple(tuple));
+        }
+        return values;
+    }
+
+    public byte[] serializeString(String value) {
+        return value == null ? null : value.getBytes(StandardCharsets.UTF_8);
     }
 
     private byte[][] serializeCollection(Collection<?> values, ThrowingSerializer serializer) {

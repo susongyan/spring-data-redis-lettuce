@@ -8,7 +8,9 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 
 import com.example.redis.async.api.AsyncRedisTemplate;
+import com.example.redis.async.connection.AsyncRedisConnectionSession;
 import com.example.redis.async.connection.AsyncRedisConnectionProvider;
+import com.example.redis.async.connection.AsyncRedisPubSubSession;
 import com.example.redis.async.exception.AsyncRedisCommandTimeoutException;
 import com.example.redis.async.exception.AsyncRedisExceptionTranslator;
 import com.example.redis.async.executor.AsyncCommandExecutor;
@@ -82,7 +84,27 @@ class AsyncRedisTemplateTests {
     }
 
     private AsyncRedisTemplate<String, String> template(RedisClusterAsyncCommands<byte[], byte[]> commands) {
-        AsyncRedisConnectionProvider provider = () -> commands;
+        AsyncRedisConnectionProvider provider = new AsyncRedisConnectionProvider() {
+            @Override
+            public RedisClusterAsyncCommands<byte[], byte[]> commands() {
+                return commands;
+            }
+
+            @Override
+            public AsyncRedisConnectionSession openSession() {
+                throw new UnsupportedOperationException("Dedicated sessions are not required for this unit test");
+            }
+
+            @Override
+            public AsyncRedisPubSubSession openPubSubSession() {
+                throw new UnsupportedOperationException("Pub/Sub sessions are not required for this unit test");
+            }
+
+            @Override
+            public boolean isClusterConnection() {
+                return false;
+            }
+        };
         AsyncCommandExecutor executor = new LettuceAsyncCommandExecutor(
                 new AsyncRedisExceptionTranslator(),
                 NoopAsyncRedisMetricsRecorder.INSTANCE,
