@@ -40,7 +40,7 @@
 
 默认配置类是：
 
-- `com.example.redis.async.config.AsyncRedisConfiguration`
+- `com.zuomaigai.redis.async.config.AsyncRedisConfiguration`
 
 ### 2. 注入并使用
 
@@ -303,59 +303,41 @@ public class UserProfileController {
 ### 源码结构关系图
 
 ```mermaid
-flowchart LR
-    subgraph config["config 自动装配层"]
+graph LR
+    subgraph Config
         configuration["AsyncRedisConfiguration"]
         factory["AsyncRedisTemplateFactory"]
     end
 
-    subgraph api["api 对外访问层"]
-        operations["AsyncRedisOperations<K,V>"]
-        template["AsyncRedisTemplate<K,V>"]
-        valueApi["AsyncValueOperations"]
-        hashApi["AsyncHashOperations"]
-        listApi["AsyncListOperations"]
-        setApi["AsyncSetOperations"]
-        zsetApi["AsyncZSetOperations"]
-        streamApi["AsyncStreamOperations"]
-        pubsubApi["AsyncPubSubOperations"]
-        txApi["AsyncTransactionOperations"]
-        valueOps["DefaultAsyncValueOperations"]
-        hashOps["DefaultAsyncHashOperations"]
-        listOps["DefaultAsyncListOperations"]
-        setOps["DefaultAsyncSetOperations"]
-        zsetOps["DefaultAsyncZSetOperations"]
-        streamOps["DefaultAsyncStreamOperations"]
-        pubsubOps["DefaultAsyncPubSubOperations"]
-        txOps["DefaultAsyncTransactionOperations"]
+    subgraph Api
+        operations["AsyncRedisOperations"]
+        template["AsyncRedisTemplate"]
+        opsApi["Value Hash List Set ZSet Stream PubSub Tx APIs"]
+        opsImpl["DefaultAsyncOperations implementations"]
     end
 
-    subgraph serialize["serialize 序列化层"]
+    subgraph Serialize
         serializationContext["RedisTemplateSerializationContext"]
         serializationFacade["RedisSerializationFacade"]
-        redisTemplate["RedisTemplate serializers"]
+        redisTemplate["RedisTemplateSerializers"]
     end
 
-    subgraph executor["executor 命令执行层"]
+    subgraph Executor
         commandExecutor["AsyncCommandExecutor"]
         lettuceExecutor["LettuceAsyncCommandExecutor"]
-        descriptor["CommandDescriptor"]
-        dataStructure["RedisDataStructure"]
+        commandMeta["CommandDescriptor RedisDataStructure"]
     end
 
-    subgraph connection["connection 连接层"]
+    subgraph Connection
         provider["AsyncRedisConnectionProvider"]
         lettuceProvider["LettuceAsyncRedisConnectionProvider"]
-        sharedCommands["shared RedisAsyncCommands"]
-        dedicatedSession["AsyncRedisConnectionSession"]
-        pubsubSession["AsyncRedisPubSubSession"]
+        sharedConnection["Shared Lettuce async connection"]
+        dedicatedConnection["Dedicated transaction blocking sessions"]
+        pubsubConnection["Dedicated PubSub session"]
     end
 
-    subgraph support["support 横切能力"]
-        exceptionTranslator["AsyncRedisExceptionTranslator"]
-        metricsRecorder["AsyncRedisMetricsRecorder"]
-        options["AsyncRedisTemplateOptions"]
-        stageAdapters["StageAdapters"]
+    subgraph Support
+        crossCutting["Exception Metrics Options StageAdapters"]
     end
 
     configuration --> factory
@@ -363,65 +345,28 @@ flowchart LR
     redisTemplate --> serializationContext
     serializationContext --> serializationFacade
 
-    operations <|.. template
-    template --> valueApi
-    template --> hashApi
-    template --> listApi
-    template --> setApi
-    template --> zsetApi
-    template --> streamApi
-    template --> pubsubApi
-    template --> txApi
-
-    valueApi <|.. valueOps
-    hashApi <|.. hashOps
-    listApi <|.. listOps
-    setApi <|.. setOps
-    zsetApi <|.. zsetOps
-    streamApi <|.. streamOps
-    pubsubApi <|.. pubsubOps
-    txApi <|.. txOps
+    template -.-> operations
+    template --> opsApi
+    opsImpl -.-> opsApi
+    template --> opsImpl
 
     template --> serializationFacade
-    valueOps --> serializationFacade
-    hashOps --> serializationFacade
-    listOps --> serializationFacade
-    setOps --> serializationFacade
-    zsetOps --> serializationFacade
-    streamOps --> serializationFacade
-    pubsubOps --> serializationFacade
-    txOps --> serializationFacade
+    opsImpl --> serializationFacade
 
-    valueOps --> commandExecutor
-    hashOps --> commandExecutor
-    listOps --> commandExecutor
-    setOps --> commandExecutor
-    zsetOps --> commandExecutor
-    streamOps --> commandExecutor
-    pubsubOps --> commandExecutor
+    opsImpl --> commandExecutor
     template --> commandExecutor
 
-    commandExecutor <|.. lettuceExecutor
-    lettuceExecutor --> descriptor
-    descriptor --> dataStructure
-    lettuceExecutor --> exceptionTranslator
-    lettuceExecutor --> metricsRecorder
-    lettuceExecutor --> options
-    lettuceExecutor --> stageAdapters
+    lettuceExecutor -.-> commandExecutor
+    lettuceExecutor --> commandMeta
+    lettuceExecutor --> crossCutting
 
-    valueOps --> provider
-    hashOps --> provider
-    listOps --> provider
-    setOps --> provider
-    zsetOps --> provider
-    streamOps --> provider
-    pubsubOps --> provider
-    txOps --> provider
+    opsImpl --> provider
+    template --> provider
 
-    provider <|.. lettuceProvider
-    lettuceProvider --> sharedCommands
-    lettuceProvider --> dedicatedSession
-    lettuceProvider --> pubsubSession
+    lettuceProvider -.-> provider
+    lettuceProvider --> sharedConnection
+    lettuceProvider --> dedicatedConnection
+    lettuceProvider --> pubsubConnection
 ```
 
 ### 命令执行时序图
@@ -430,44 +375,43 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant Biz as "业务代码"
-    participant Template as "AsyncRedisTemplate"
-    participant ValueOps as "DefaultAsyncValueOperations"
-    participant Serializer as "RedisSerializationFacade"
-    participant Executor as "LettuceAsyncCommandExecutor"
-    participant Metrics as "AsyncRedisMetricsRecorder"
-    participant Provider as "AsyncRedisConnectionProvider"
-    participant Lettuce as "RedisAsyncCommands"
-    participant Redis as "Redis Server"
-    participant Translator as "AsyncRedisExceptionTranslator"
+    participant Biz
+    participant Template
+    participant ValueOps
+    participant Serializer
+    participant Executor
+    participant Metrics
+    participant Provider
+    participant Lettuce
+    participant Redis
+    participant Translator
 
-    Biz->>Template: opsForValue()
+    Biz->>Template: opsForValue
     Template-->>Biz: AsyncValueOperations
-    Biz->>ValueOps: get(key)
-    ValueOps->>Serializer: serializeKey(key)
+    Biz->>ValueOps: get key
+    ValueOps->>Serializer: serialize key
     Serializer-->>ValueOps: rawKey
-    ValueOps->>Executor: execute(GET descriptor, invocation, decoder)
-    Executor->>Metrics: start(CommandDescriptor)
-    Executor->>Provider: commands()
+    ValueOps->>Executor: execute GET
+    Executor->>Metrics: start sample
+    Executor->>Provider: commands
     Provider-->>Executor: shared RedisAsyncCommands
-    Executor->>Lettuce: get(rawKey)
-    Lettuce-->>Executor: RedisFuture<byte[]>
-    Executor-->>Biz: CompletionStage<V>
+    Executor->>Lettuce: get rawKey
+    Lettuce-->>Executor: RedisFuture raw bytes
+    Executor-->>Biz: CompletionStage value
 
     Redis-->>Lettuce: RESP bulk string
     Lettuce-->>Executor: complete RedisFuture
 
     alt command success
-        Executor->>Serializer: deserializeValue(rawValue)
+        Executor->>Serializer: deserialize rawValue
         Serializer-->>Executor: value
-        Executor->>Metrics: success()
-        Executor-->>Biz: complete CompletionStage(value)
+        Executor->>Metrics: success
+        Executor-->>Biz: complete stage with value
     else command failure or decode failure
-        Executor->>Translator: translate(descriptor, error)
-        Translator-->>Executor: Spring-style RuntimeException
-        Executor->>Metrics: failure(exception)
-        Executor-->>Biz: completeExceptionally(exception)
+        Executor->>Translator: translate error
+        Translator-->>Executor: Spring RuntimeException
+        Executor->>Metrics: failure
+        Executor-->>Biz: complete stage exceptionally
     end
 ```
 
@@ -493,9 +437,9 @@ sequenceDiagram
 
 项目里已经包含一个最小 Spring Boot 示例：
 
-- 应用入口：`src/main/java/com/example/redis/example/AsyncRedisExampleApplication.java`
-- 示例 Service：`src/main/java/com/example/redis/example/UserProfileService.java`
-- 示例 Controller：`src/main/java/com/example/redis/example/UserProfileController.java`
+- 应用入口：`src/main/java/com/zuomaigai/redis/example/AsyncRedisExampleApplication.java`
+- 示例 Service：`src/main/java/com/zuomaigai/redis/example/UserProfileService.java`
+- 示例 Controller：`src/main/java/com/zuomaigai/redis/example/UserProfileController.java`
 
 示例接口：
 
@@ -547,8 +491,8 @@ mvn test
 
 ## 示例代码位置
 
-- 异步模板入口：`src/main/java/com/example/redis/async/api/AsyncRedisTemplate.java`
-- Value API：`src/main/java/com/example/redis/async/api/AsyncValueOperations.java`
-- Hash API：`src/main/java/com/example/redis/async/api/AsyncHashOperations.java`
-- 自动配置：`src/main/java/com/example/redis/async/config/AsyncRedisConfiguration.java`
-- 集成测试：`src/test/java/com/example/redis/example/AsyncRedisTemplateIntegrationTests.java`
+- 异步模板入口：`src/main/java/com/zuomaigai/redis/async/api/AsyncRedisTemplate.java`
+- Value API：`src/main/java/com/zuomaigai/redis/async/api/AsyncValueOperations.java`
+- Hash API：`src/main/java/com/zuomaigai/redis/async/api/AsyncHashOperations.java`
+- 自动配置：`src/main/java/com/zuomaigai/redis/async/config/AsyncRedisConfiguration.java`
+- 集成测试：`src/test/java/com/zuomaigai/redis/example/AsyncRedisTemplateIntegrationTests.java`

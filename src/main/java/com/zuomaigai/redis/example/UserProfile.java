@@ -1,0 +1,10 @@
+package com.zuomaigai.redis.example;
+
+public record UserProfile(
+        String id,
+        String displayName,
+        String email,
+        String city,
+        String status
+) {
+}

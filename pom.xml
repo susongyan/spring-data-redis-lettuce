@@ -10,7 +10,7 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.example</groupId>
+    <groupId>com.zuomaigai</groupId>
     <artifactId>spring-data-redis-lettuce</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>spring-data-redis-lettuce</name>

@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: com.example.redis.example.AsyncRedisTemplateIntegrationTests
--------------------------------------------------------------------------------
-Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 11.00 s -- in com.example.redis.example.AsyncRedisTemplateIntegrationTests

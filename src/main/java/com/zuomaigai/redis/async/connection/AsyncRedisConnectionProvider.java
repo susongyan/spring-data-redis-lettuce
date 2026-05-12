@@ -1,0 +1,14 @@
+package com.zuomaigai.redis.async.connection;
+
+import io.lettuce.core.cluster.api.async.RedisClusterAsyncCommands;
+
+public interface AsyncRedisConnectionProvider {
+
+    RedisClusterAsyncCommands<byte[], byte[]> commands();
+
+    AsyncRedisConnectionSession openSession();
+
+    AsyncRedisPubSubSession openPubSubSession();
+
+    boolean isClusterConnection();
+}
