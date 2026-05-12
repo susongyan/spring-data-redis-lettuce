@@ -4,6 +4,21 @@
 
 它的目标不是替代 `ReactiveRedisTemplate`，而是在保留 `RedisTemplate` 使用习惯的前提下，提供一套统一返回 `CompletionStage<T>` 的异步 API。
 
+## 版本要求
+
+当前项目基于 Spring Boot 3.x 技术栈：
+
+- JDK：最低 Java 17，当前 `pom.xml` 配置为 `<java.version>17</java.version>`；可以在 JDK 21 上开发和运行。
+- Spring Boot：`3.3.5`
+- Spring Framework：随 Spring Boot 3.3.5 管理，属于 Spring Framework 6.x
+- Spring Data Redis：随 Spring Boot 3.3.5 管理，属于 Spring Data 2024.x 对应版本
+- Lettuce：通过 `spring-boot-starter-data-redis` 间接引入，版本由 Spring Boot 依赖管理控制
+- Micrometer：通过 `micrometer-core` 引入，版本由 Spring Boot 依赖管理控制
+
+该项目不能直接在 JDK 8 项目中使用。原因是 Spring Boot 3 / Spring Framework 6 最低要求 Java 17，并且当前源码使用了 `record`、`List.of`、`Map.of`、`instanceof` 模式匹配等 Java 8 不支持的语法或 API。
+
+如果要支持 JDK 8，需要单独维护兼容分支，通常需要降级到 Spring Boot 2.7.x / Spring Framework 5.3.x / Spring Data Redis 2.7.x，并改写 Java 9+ 语法和 API。
+
 ## 设计目标
 
 - API 风格尽量贴近 `RedisTemplate`，通过 `opsForValue()`、`opsForHash()` 暴露访问入口。
